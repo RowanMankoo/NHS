@@ -1,0 +1,391 @@
+---
+title: "Investigation Into Demand on Coventry/Rugby GP's"
+output:
+  pdf_document: default
+  html_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(rio)
+library(dplyr)
+library(lubridate)
+library(ggplot2)
+library(grid)
+library(gridExtra)
+library(forcats)
+library(kableExtra)
+library(knitr)
+```
+# Introduction
+
+In the recent years, great pressure has been applied on general practices to attend to members of the public. General practitioners (GPs) are highly skilled doctors who, with the assistance of nurses, are essential in maintaining health within their local community by providing routine care to patients and treating acute illnesses. An array of services is provided ranging from vaccinations and examinations to health advice in an urge to retain a protective stance as the initial point of contact for many patients. Due to their unspecified nature, GPs only deal with mild and preliminary illnesses with urgent or complex cases being referred to hospitals. Although GP partners in the UK are funded by the NHS based on the number of patients, they are known to be ‘independent contractors’ and function like small businesses. Due to the congestive nature of the practices, patients are required to book appointments beforehand in order to secure meeting with a doctor. 
+
+
+In this report, the demand on GPs within the regions of Coventry and Rugby was studied by analysing data sourced from the NHS digital website, the national provider of information in health and social care. Bearing in mind that the population of the focused region is estimated to be around 500,000, it is clear that there is an immense obligation of GPs to preserve a consistent service. The online databases were used to collate, and filter appointment information captured on general practice systems. However, it is important to acknowledge that this data may not be representative of all activity as not everything is recorded on the systems, limiting the interpretation of this report. Further details about the data can be found on the NHS digital website (under “Appointments” in “General Practice”).
+
+
+# Purpose Of This Report
+
+This report has two main aims:
+
+ 1. To investigate whether demand has increased on GPs
+ 2. To investigate into appointment wait times and their link between missed appointments
+ 
+GPs are notoriously know for being overworked, the first part of this report sets out to question whether demand on GPs is actually increasing or not. The second part of this report investigates into appointment wait times and whether longer wait times are costing the NHS more money due to people missing appointments that they must wait longer for.  
+
+ 
+```{r, include=FALSE, warning=FALSE}
+monthYears <- paste0(month.abb[c(3:12,1:8)], "_", c(rep(18,10),rep(19,8)))
+d <- list()
+
+for (i in 1:length(monthYears)) {
+  filename <- paste0("Appointments_GP_Daily_Aug19/CCG_CSV_", monthYears[i], ".csv")
+  d[[i]] <- import(filename, setclass = "tibble")
+}
+
+CovData <- tibble()
+for (i in 1:length(monthYears)) {
+  CovData <- rbind(CovData, filter(d[[i]], CCG_NAME=="NHS Coventry and Rugby CCG"))
+}
+CovData <- select(CovData, Appointment_Date, APPT_STATUS, HCP_TYPE, APPT_MODE, TIME_BETWEEN_BOOK_AND_APPT,
+                COUNT_OF_APPOINTMENTS)
+
+CovData$Appointment_Date = parse_date_time(CovData$Appointment_Date, "d m y")
+
+CovData <- CovData %>% mutate(day=wday(CovData$Appointment_Date, TRUE))
+CovData <- CovData %>% mutate(month=format(as.POSIXct(CovData$Appointment_Date),"%Y-%m"))
+
+
+dummy <- import("Appointments_GP_Daily_Aug19/APPOINTMENTS_GP_COVERAGE.csv", setclass = "tibble")
+dummy <- filter(dummy,COMMISSIONER_ORGANISATION_CODE=="05A" )
+dummy <- select(dummy, Appointment_Month, 'Included Practices', 'Open Practices', 'Patients registered at included practices', 'Patients registered at open practices')
+dummy$Appointment_Month = parse_date_time(dummy$Appointment_Month, "d m y")
+colnames(dummy)[1] <- "Appointment_Date"
+dummy <- mutate(dummy, month=format(as.POSIXct(dummy$Appointment_Date), "%Y-%m"))
+dummy <- select(dummy, -c(Appointment_Date))
+
+CovData <- left_join(CovData,dummy, by= "month")
+
+groupData <- group_by(CovData, Appointment_Date)
+sumData <- summarise(groupData, Number_Of_Appointments=sum(COUNT_OF_APPOINTMENTS))
+sumData <- mutate(sumData, Weekday=wday(Appointment_Date, label=TRUE))
+sumData <- left_join(sumData, select(CovData,-c(day)), by="Appointment_Date")
+sumData <- mutate(sumData, log_registered_patients = log(`Patients registered at included practices`))
+my_model <- glm(Number_Of_Appointments ~ 0 + Weekday + offset(log_registered_patients), family="poisson", data=sumData)
+
+sumData <- mutate(sumData, year=format(as.POSIXct(sumData$Appointment_Date),"%Y"))
+
+b <- mutate(sumData, month_day=format(as.POSIXct(sumData$Appointment_Date),"%m-%d"))
+
+b1 <- filter(b,year=="2018",month<"2018-09")
+b1 <- mutate(b1, Month=month(as.Date(Appointment_Date)))
+
+b2 <- filter(b,year=="2019",month>"2019-02")
+b2 <- mutate(b2, Month=month(as.Date(Appointment_Date)))
+
+DateData <- rbind(b1,b2)
+```
+ 
+# Exploratory Data Analysis (EDA) 
+
+Before we investigate into demand and appointments wait times we would like to uncover any underlying patterns or trends in our dataset. First we would like to know the proportion of appointments taken by GP's and non GP staff (nurses), and whether these proportions have changed from previous years.
+
+
+```{r, echo=FALSE, warning=FALSE, fig.height=2}
+q <- sumData %>% filter(HCP_TYPE=="Other Practice staff",year=="2018")
+q <- q %>% group_by(Appointment_Date) %>% summarise("Number_Of_Appointments"=sum(COUNT_OF_APPOINTMENTS))
+q <- q %>% summarise("Number_Of_Appointments"=sum(Number_Of_Appointments))
+
+q1 <- sumData %>% filter(year=="2018",!(HCP_TYPE=="Unknown"))
+q1 <- q1 %>% group_by(Appointment_Date) %>% summarise("Number_Of_Appointments"=sum(COUNT_OF_APPOINTMENTS))
+q1 <- q1 %>% summarise("Number_Of_Appointments"=sum(Number_Of_Appointments)) 
+
+p <- sumData %>% filter(HCP_TYPE=="Other Practice staff",year=="2019")
+p <- p %>% group_by(Appointment_Date) %>% summarise("Number_Of_Appointments"=sum(COUNT_OF_APPOINTMENTS))
+p <- p %>% summarise("Number_Of_Appointments"=sum(Number_Of_Appointments))
+
+p1 <- sumData %>% filter(year=="2019",!(HCP_TYPE=="Unknown"))
+p1 <- p1 %>% group_by(Appointment_Date) %>% summarise("Number_Of_Appointments"=sum(COUNT_OF_APPOINTMENTS))
+p1 <- p1 %>% summarise("Number_Of_Appointments"=sum(Number_Of_Appointments)) 
+
+o1 <- (q[1]/q1[1])*100
+o2 <- (p[1]/p1[1])*100
+
+a1 <- rbind(o1,o2)
+colnames(a1) <- c("Percentage_of_Appointments")
+
+q <- sumData %>% filter(HCP_TYPE=="GP",year=="2018")
+q <- q %>% group_by(Appointment_Date) %>% summarise("Number_Of_Appointments"=sum(COUNT_OF_APPOINTMENTS))
+q <- q %>% summarise("Number_Of_Appointments"=sum(Number_Of_Appointments))
+
+q1 <- sumData %>% filter(year=="2018",!(HCP_TYPE=="Unknown"))
+q1 <- q1 %>% group_by(Appointment_Date) %>% summarise("Number_Of_Appointments"=sum(COUNT_OF_APPOINTMENTS))
+q1 <- q1 %>% summarise("Number_Of_Appointments"=sum(Number_Of_Appointments)) 
+
+p <- sumData %>% filter(HCP_TYPE=="GP",year=="2019")
+p <- p %>% group_by(Appointment_Date) %>% summarise("Number_Of_Appointments"=sum(COUNT_OF_APPOINTMENTS))
+p <- p %>% summarise("Number_Of_Appointments"=sum(Number_Of_Appointments))
+
+p1 <- sumData %>% filter(year=="2019",!(HCP_TYPE=="Unknown"))
+p1 <- p1 %>% group_by(Appointment_Date) %>% summarise("Number_Of_Appointments"=sum(COUNT_OF_APPOINTMENTS))
+p1 <- p1 %>% summarise("Number_Of_Appointments"=sum(Number_Of_Appointments)) 
+
+o1 <- (q[1]/q1[1])*100
+o2 <- (p[1]/p1[1])*100
+
+a2 <- rbind(o1,o2)
+colnames(a2) <- c("Percentage_of_Appointments")
+
+
+df <- rbind(a1,a2)
+Year <- c("2018", "2019", "2018", "2019")
+df$Year <- Year
+GP <- c("No", "No", "Yes", "Yes")
+df$GP <- GP
+
+ggplot(df, aes(x=Year,y=Percentage_of_Appointments,fill=GP)) +
+  geom_bar(stat="identity",colour="Black") +
+  coord_flip() +
+  scale_fill_manual(values = c("#56B4E9", "#0072B2")) +
+  geom_text(aes(label= paste0(round(Percentage_of_Appointments, digits=2),"%")), position = position_stack(vjust = 0.5), color="white") +
+  ylab("Percentage Of Appointments") +
+  ggtitle("Split Of Appointments Between GP's And Nurses") +
+  labs(caption="Figure 1")
+```
+From Figure 1 it can be seen that GPs conduct most appointments in a general practice, and this number is increasing (by 1.04%) causing a further strain on GPs. A possible solution for this may be for nurses to take some of the GPs appointments, however this may not always be appropriate due to the level of expertise needed to conduct the appointments. It is important to note that while the purpose of this report is to investigate demand placed onto GPs, nurses are also overworked and in high demand so they may not be able to take on more appointments. 
+
+Now we would like to make a plot to visualise the number of appointments taken each day. It is important to note that Figure 2 shows all appointments in the general practice conducted by both GP's and other practice staff (nurses).
+
+
+```{r, echo=FALSE, warning=FALSE}
+df1 <- CovData %>% group_by(Appointment_Date) %>% summarise("number_of_appointments"=sum(COUNT_OF_APPOINTMENTS))
+df1 <- df1 %>% mutate(day=wday(df1$Appointment_Date, TRUE))
+
+cbp1 <- c("#999999", "#E69F00", "#56B4E9", "#009E73",
+          "#F0E442", "#0072B2", "#D55E00", "#CC79A7")
+
+df1 %>% ggplot(aes(x=as.Date(Appointment_Date),y=number_of_appointments)) +
+  geom_point(aes(colour=day)) +
+  scale_colour_manual(values=cbp1) +
+  ggtitle("Number of appointments in NHS Coventry and Rugby CCG") +
+  xlab("Date") +
+  ylab("Number Of Appointments") +
+  scale_x_date(date_labels = "%Y-%m", date_breaks="3 months") +
+  labs(caption="Figure 2")
+```
+It can be seen from the graph that in the year 2018 there is a clear dip in the number of appointments made between July-October, and we can see the same dip occur in July of 2019. It is apparent that the number of appointments made is clearly affected by the current month. Winter appears to be the busiest period for general practices as people are more prone to illness in the winter. We should keep this in mind when comparing demand in the recent past. Certain days of the week are also busier than others, for example Mondays are the busiest weekday, this is probably due to people waiting over the weekend needing to see their GP.
+ 
+# Demand On GPs (Task 1)
+
+Now to explore the demand placed on Coventry/Rugby GPs, and whether it has increased over the recent past or not. To see if demand on GP's has increased over recent past, there are multiple GLM's (general linear models) that have been plotted. There is a model fit to each day of the weekday, as by looking at figure 2 (in our EDA section) we can observe that there is a large amount of variation in the number of appointments for different days of the week.
+
+It is apparent from figure 1 that the number of appointments varies with the seasons, so we shall only compare the same months. Due to limitations on the data only months March through to August were looked at. To get a more representative fit for all our model's, certain observations has been removed which we have deemed to be outliers, such as days where appointments were very low due to banks holidays and such.  
+ 
+
+```{r, echo=FALSE, warning=FALSE, message=FALSE}
+year(b1$Appointment_Date) <- 2019
+
+q1 <- filter(b1,!(Weekday %in% c("Sat","Sun")))
+q1 <- filter(q1,HCP_TYPE=="GP")
+q1 <- q1 %>% group_by(Appointment_Date,Weekday) %>% summarise("test1"=sum(COUNT_OF_APPOINTMENTS))
+q1 <- filter(q1,test1>1000)
+
+q2 <- filter(b2,!(Weekday %in% c("Sat","Sun")))
+q2 <- filter(q2,HCP_TYPE=="GP")
+q2 <- q2 %>% group_by(Appointment_Date,Weekday) %>% summarise("test1"=sum(COUNT_OF_APPOINTMENTS))
+q2 <- filter(q2,test1>1000)
+
+p <- ggplot() +
+  geom_smooth(data=q1,aes(x=as.Date(Appointment_Date),y=test1,colour="2018")) +
+  geom_smooth(data=q2,aes(x=as.Date(Appointment_Date),y=test1,colour="2019")) +
+  scale_colour_manual("", 
+                      breaks = c("2018", "2019"),
+                      values = c("#56B4E9", "#0072B2"))
+
+p <- p + facet_wrap( ~ Weekday )
+p + ylab( "Number of Appointments" )+
+  xlab("Date (March to August)") +
+  scale_x_date(date_labels = "%m", date_breaks="1 months") +
+  labs(colour="Year", caption="Figure 3") +
+  ggtitle("Change Over Time In Number Of GP Appointments")
+```
+By looking at figure 3 it can see that the 2018 (light blue) and 2019 (dark blue) lines are very close to each other if not touching in almost all the graph's, except for Thursday. However, the increase in Thursday may be by chance as there are only have 30 available data points to plot. There are months for which 2018 had more appointments that 2019 and visa vera, but these increases can be attributed to public health epidemic's such as flu outbreaks.
+
+To confidently say there that there has been an increase the 2019 line to be consistently higher than the 2018 line for almost all the days. This disproves the hypothesis that the number of GP appointments have increased from 2018 to 2019.
+
+
+## Type Of Appointments
+
+Now to shift our focus on the three types of appointments (face to face, telephone and home visits) to see if there is an increase in a certain type of appointment. It is important to note that the boxplots also only take data from months March through to August, and once again observations are removed from the data on any days where appointments were close to zero for more accurate plots.
+
+```{r, fig.height=6.7, echo=FALSE, warning=FALSE}
+y1 <- DateData %>% filter(APPT_MODE=="Face-to-Face")
+y1 <- y1 %>% group_by(Appointment_Date) %>% summarise("Number_Of_Appointments"=sum(COUNT_OF_APPOINTMENTS))
+y1 <- y1 %>% mutate(Weekday=wday(as.POSIXct(Appointment_Date), label=TRUE), Year=format(as.POSIXct(y1$Appointment_Date),"%Y"))
+y1 <- filter(y1,Number_Of_Appointments>2500)
+
+y2 <- DateData %>% filter(APPT_MODE=="Telephone")
+y2 <- y2 %>% group_by(Appointment_Date) %>% summarise("Number_Of_Appointments"=sum(COUNT_OF_APPOINTMENTS))
+y2 <- y2 %>% mutate(Weekday=wday(as.POSIXct(Appointment_Date), label=TRUE), Year=format(as.POSIXct(y2$Appointment_Date),"%Y"))
+y2 <- filter(y2,Number_Of_Appointments>250)
+
+y3 <- DateData %>% filter(APPT_MODE=='Home Visit')
+y3 <- y3 %>% group_by(Appointment_Date) %>% summarise("Number_Of_Appointments"=sum(COUNT_OF_APPOINTMENTS))
+y3 <- y3 %>% mutate(Weekday=wday(as.POSIXct(Appointment_Date), label=TRUE), Year=format(as.POSIXct(y3$Appointment_Date),"%Y"))
+y3 <- filter(y3,Number_Of_Appointments>5)
+
+w1 <- ggplot(data=subset(y1,!(Weekday %in% c("Sat","Sun"))) %>% group_by(Weekday)) +
+  geom_boxplot(aes(x=Weekday,y=Number_Of_Appointments,fill=Year)) +
+  ylim(5000,8500) +
+  xlab("") +
+  ggtitle("Face-To-Face Appointments") +
+  ylab("Appointments") +
+  scale_fill_manual(values=c("#56B4E9", "#0072B2"))
+
+
+w2 <- ggplot(data=subset(y2,!(Weekday %in% c("Sat","Sun"))) %>% group_by(Weekday)) +
+  geom_boxplot(aes(x=Weekday,y=Number_Of_Appointments,fill=Year)) +
+  ylim(600,1400) +
+  xlab("") +
+  ggtitle("Telephone Calls") +
+  ylab("Appointments") +
+  scale_fill_manual(values=c("#56B4E9", "#0072B2"))
+
+w3 <- ggplot(data=subset(y3,!(Weekday %in% c("Sat","Sun"))) %>% group_by(Weekday)) +
+  geom_boxplot(aes(x=Weekday,y=Number_Of_Appointments,fill=Year)) +
+  ylim(50,170)+
+  ggtitle("Home Visits") +
+  ylab("Appointments") +
+  scale_fill_manual(values=c("#56B4E9", "#0072B2")) +
+  labs(caption="Figure 4")
+
+grid.arrange(w1,w2,w3, top=textGrob("Boxplots For Different Appointment Types",gp=gpar(fontsize=20)))
+```
+
+It can be can seen from figure 4 that for face to face appointments there is only an increase for Thursday, while all the other days have remained the same. So, there has not been an increase in the number of face-to-face appointments from 2018 to 2019. Likewise, the number of home visits remained the same for most of the other days of the week.
+
+However, there has been a large increase in the number of telephone calls made between 2018 and 2019, this is understandable as telephone appointments are more convenient for many patients. Telephone consultations are also shorter on average (4-6 minutes) than a traditional face-to-face appointment, resulting in less demand on GPs. For this reason, the NHS have been providing facilities to general practices so that they can increase the number of telephone consultations made. By doing this GPs have managed to keep the number of face-to-face appointments the same whilst the total number of GP appointments have been increasing.
+
+
+# Appointment Wait Times For Non-Urgent Appointments (Task 2)
+
+When booking an appointment at a general practice you will be given a date for when your appointment is. If you have an urgent problem, then you can usually get a same/next day appointment. Patients who need an appointment for a non-urgent problem will usually be served within 28 days. The NHS have been trying to reduce the wait time for non-urgent GP visit for the past few years. 
+
+This section focuses on the question of whether Coventry/Rugby GP's have successfully reduced the wait time for their non-urgent appointments. Below there is a bar chart showing whether the number of GP appointments has increased from the previous year.
+
+
+
+```{r, echo=FALSE, warning=FALSE}
+q <- DateData %>% filter(HCP_TYPE=="GP")
+
+e <- levels(factor(DateData$TIME_BETWEEN_BOOK_AND_APPT)) 
+e <- e[-8]
+z <- data.frame("year" = c(0), "Number_Of_Appointments" = c(0), "Time_Period" = c(0))
+
+for(i in 1:length(e)){
+  e1 <- q %>% filter(TIME_BETWEEN_BOOK_AND_APPT==e[i])
+  e1 <- e1 %>% group_by(Appointment_Date,year) %>% summarise("Number_Of_Appointments"=sum(COUNT_OF_APPOINTMENTS))
+  e11 <- filter(e1,year=="2018") %>% group_by(year) %>% summarise("Number_Of_Appointments"=sum(Number_Of_Appointments))
+  e12 <- filter(e1,year=="2019") %>% group_by(year) %>% summarise("Number_Of_Appointments"=sum(Number_Of_Appointments))
+  
+  e11 <- mutate(e11, "Time_Period"=e[i])
+  e12 <- mutate(e12, "Time_Period"=e[i])
+  
+  z <- rbind(z,as.data.frame(e11))
+  z <- rbind(z,as.data.frame(e12))
+}
+
+z <- z[-1,]
+z$Time_Period <- as.factor(z$Time_Period)
+levels(z$Time_Period) <- c("1", "15-21", "2-7", "22-28", "8-14", "28+", "Same Day")
+
+mutate(z, Time_Period = fct_relevel(Time_Period, "Same Day", "1", "2-7", "8-14", "15-21", "22-28", "28+")) %>%
+  ggplot(aes(x=Time_Period,y=Number_Of_Appointments,fill=year)) +
+  geom_bar(stat="identity", position=position_dodge(),colour="Black") +
+  scale_fill_manual(values = c("#56B4E9", "#0072B2")) +
+  xlab(" Time Period (Days)") +
+  ylab("Number Of Appointments") +
+  labs(caption="Figure 5") +
+  ggtitle("Wait Times For GP Appointments") +
+  scale_y_continuous(labels=NULL, breaks=NULL)
+```
+The non-urgent appointments are represented by wait times of 2 days or more, so in the graph above we are focusing on the 3rd bar onwards. Appointments for wait times of two to seven days has decreased from 2018 to 2019, and Appointments which have wait times of more than seven days has increased from 2018 to 2019. This indicates that the Coventry/Rugby GP's have failed to decrease wait times for non-urgent GP visits.
+
+## Missed appointments
+
+A very large number of general practice appointments are being missed each year because patients do not turn up and fail to warn surgeries that they will not be attending. This results in the NHS losing millions each year. A possible cause of people cancelling appointments may be due to increasingly long wait times for non-urgent appointments. We would like to confirm whether this theory is true and find out if there is a link between Appointment wait times and the number of did not attend appointments (DNA's).
+
+
+
+```{r, echo=FALSE, warning=FALSE}
+w <- levels(factor(DateData$TIME_BETWEEN_BOOK_AND_APPT)) 
+w <- w[-8]
+z1 <- data.frame("Number_Of_Appointments" = c(0), "Time_Period" = c(0))
+
+for(i in 1:length(w)){
+  w1 <- sumData %>% filter(TIME_BETWEEN_BOOK_AND_APPT==w[i])
+  w1 <- w1 %>% group_by(Appointment_Date) %>% summarise("Number_Of_Appointments"=sum(COUNT_OF_APPOINTMENTS))
+  w1 <- w1 %>% summarise("Number_Of_Appointments"=sum(Number_Of_Appointments))
+  
+  w1 <- mutate(w1, "Time_Period"=w[i])
+
+  z1 <- rbind(z1,as.data.frame(w1))
+}
+
+z1 <- z1[-1,]
+
+
+
+z11 <- data.frame("Number_Of_DNA" = c(0), "Time_Period" = c(0))
+
+for(i in 1:length(w)){
+  w1 <- filter(sumData,APPT_STATUS=="DNA",TIME_BETWEEN_BOOK_AND_APPT==w[i])
+  w1 <- w1 %>% group_by(Appointment_Date) %>% summarise("Number_Of_Appointments"=sum(COUNT_OF_APPOINTMENTS))
+  w1 <- w1 %>% summarise("Number_Of_DNA"=sum(Number_Of_Appointments))
+  
+  w1 <- mutate(w1, "Time_Period"=w[i])
+
+  z11 <- rbind(z11,as.data.frame(w1))
+}
+
+z11 <- z11[-1,]
+
+z2 <- left_join(z1,z11, by = "Time_Period")
+z2 <- mutate(z2, "Percentage Of DNA"=(Number_Of_DNA/Number_Of_Appointments)*100)
+z2 <- z2[,-1]
+z2 <- z2[,-2]
+
+
+z2 %>% arrange(`Percentage Of DNA`) %>%
+kable(col.names = c("Time Period","Percentage Of DNA Appointments"),
+             align= c('c','c'), digits=3) %>%
+  kable_styling(bootstrap_options = c("striped", "hover", "condensed"))  %>%
+  column_spec(1, width = "5cm", border_left = TRUE, border_right = TRUE) %>% 
+  column_spec(2, border_right = TRUE) %>%
+  row_spec(1:3, bold= TRUE) 
+
+```
+
+From the table we can see that appointments with wait times of 22 days and longer have the highest percentage of DNA's, and appointments with wait times of 8-21 days and longer have a lower amount of DNA's. We can see from figure 5 that the average wait time for a non-urgent appointment is between 8-14 days. Appointments which have wait times over the average length have more DNA's than the average wait time. So there is supporting evidence that people are cancelling their non-urgent appointmennts due to longer wait times.
+
+# Conclusion 
+
+It is important to note that there is allot of limitations of the data used in this report, as for most of the graphs (figures 3,4,5) have only used months March through to August. By limiting these graphs to only these months important information has been lost for general practices, as they are most busy in the winter, so GPs would be in higher demand. Also answering the question of whether demand on GPs has increased would have been allot easier if NHS digital had provided the number of active GP's working.
+
+The total number of GP appointments has slightly increased from 2018 to 2019 due to population increase. To tackle the rising number of general practice Appointments GPs have decided to increase the number of telephone appointments that they take. With how overworked GPs are, they have to rely on the latest technology to alleviate some of the pressure on them. Choosing to take more telephone appointments is a step in the right direction as they have managed to serve more patients whilst keeping the number of face-to-face appointments the same.
+
+There has been allot of talk in the news about increasing pressure placed onto GP's to provide sufficient healthcare to the public. GPs are having to work harder and are being worked longer hours, this has led to deterioration in certain aspects of healthcare provided to the general public. We have uncovered some of these problems in this report such as the waiting time of non-urgent appointments. We have gone on to prove that people are cancelling their non-urgent appointments due to long wait times. so the NHS could benifit in two ways by shortening the appointment wait times.
+
+# References
+
+ [1.](https://digital.nhs.uk/data-and-information/publications/statistical/appointments-in-general-practice) NHS digital
+ 
+ [2.](https://www.england.nhs.uk/wp-content/uploads/2016/03/releas-capcty-case-study-2-183.pdf) NHS case study
+
+
+
+
+
+
+ 
