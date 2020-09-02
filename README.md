@@ -10,6 +10,8 @@ hospitals. Although GP partners in the UK are funded by the NHS based on the num
 are known to be ‘independent contractors’ and function like small businesses. Due to the congestive nature
 of the practices, patients are required to book appointments beforehand in order to secure meeting with a
 doctor.
+
+
 In this report, the demand on GPs within the regions of Coventry and Rugby was studied by analysing
 data sourced from the NHS digital website, the national provider of information in health and social care.
 Bearing in mind that the population of the focused region is estimated to be around 500,000, it is clear that
